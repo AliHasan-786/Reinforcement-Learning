@@ -1,0 +1,8 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.DS_Store
+
+# Large lecture file (too big for GitHub)
+All RL Lectures v2.pdf
