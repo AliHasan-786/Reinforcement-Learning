@@ -720,6 +720,63 @@ def build_report():
         story.append(Paragraph(ref, S["ref"]))
 
     # -----------------------------------------------------------------------
+    # Appendix: Code Listings
+    # -----------------------------------------------------------------------
+    story.append(PageBreak())
+    story.append(section_block("Appendix: Code", S))
+    story.append(Paragraph(
+        "The following pages contain the complete source code for both assignments. "
+        "Assignment 2 code (<i>rl_housing_inspection.py</i>) implements the base MDP environment, "
+        "First-Visit Monte Carlo, Tabular Q-Learning, and DQN agents. "
+        "Assignment 3 code (<i>rl_housing_hw3.py</i>) extends this with REINFORCE, "
+        "Shapley feature importance, multi-objective reward experiments, and all visualizations.",
+        S["body"]
+    ))
+    story.append(Spacer(1, 0.15 * inch))
+
+    code_style = ParagraphStyle(
+        "code",
+        fontName="Courier",
+        fontSize=6.5,
+        leading=9,
+        leftIndent=12,
+        rightIndent=12,
+        backColor=colors.HexColor("#F8F8F8"),
+        borderColor=colors.HexColor("#DDDDDD"),
+        borderWidth=0.5,
+        borderPadding=6,
+        wordWrap="CJK",
+    )
+
+    code_files = [
+        ("A.1  rl_housing_inspection.py  (Assignment 2 — Base Environment & Agents)",
+         os.path.join(BASE_DIR, "rl_housing_inspection.py")),
+        ("A.2  rl_housing_hw3.py  (Assignment 3 — Policy Gradient, Shapley, Pareto)",
+         os.path.join(BASE_DIR, "rl_housing_hw3.py")),
+    ]
+
+    import html as _html
+
+    for section_title, filepath in code_files:
+        story.append(PageBreak())
+        story.append(subsection_block(section_title, S))
+        story.append(Spacer(1, 0.1 * inch))
+        if not os.path.exists(filepath):
+            story.append(Paragraph(f"[File not found: {filepath}]", S["body"]))
+            continue
+        with open(filepath, "r") as fh:
+            source = fh.read()
+        # Split into chunks so ReportLab doesn't choke on one giant paragraph
+        lines = source.split("\n")
+        CHUNK = 60  # lines per paragraph block
+        for start in range(0, len(lines), CHUNK):
+            chunk = "\n".join(lines[start:start + CHUNK])
+            # Escape HTML entities, preserve whitespace
+            escaped = _html.escape(chunk).replace(" ", "&nbsp;").replace("\n", "<br/>")
+            story.append(Paragraph(escaped, code_style))
+            story.append(Spacer(1, 2))
+
+    # -----------------------------------------------------------------------
     # Build PDF
     # -----------------------------------------------------------------------
     doc.build(story, onFirstPage=_footer, onLaterPages=_footer)
