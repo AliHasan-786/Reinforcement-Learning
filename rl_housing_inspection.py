@@ -44,10 +44,14 @@ def generate_synthetic_data(n_records: int = 755, seed: int = 42) -> pd.DataFram
     Generate synthetic AHV complaint records matching the report's description:
       - 755 hourly records from NYC Open Data (AHV complaint type)
       - Exactly 16 true violations (~2.1%), concentrated in recurrent & high-freq types
-      - Fields: complaint_category, borough, hour_of_day, is_violation
+      - Fields: complaint_category, borough, hour_of_day, inspector_budget,
+                prior_complaint_count, time_of_day_bin, is_violation
         * complaint_category: 0=brand-new, 1=recurrent, 2=high-frequency
         * borough: 0-4 (Manhattan, Brooklyn, Queens, Bronx, Staten Island)
         * inspector_budget: per-step availability drawn from data (mostly 4-5)
+        * prior_complaint_count: 0=none, 1=one prior, 2=two-three priors, 3=four+ priors
+        * time_of_day_bin: 0=night(10pm-6am), 1=morning(6am-12pm),
+                           2=afternoon(12pm-6pm), 3=evening(6pm-10pm)
     """
     rng = np.random.default_rng(seed)
 
@@ -61,8 +65,24 @@ def generate_synthetic_data(n_records: int = 755, seed: int = 42) -> pd.DataFram
     hour_of_day = rng.integers(0, 24, size=n_records)
 
     # Inspector budget per step: mostly 4-5 (high availability), rarely 0-1
-    # This represents hourly inspector staffing levels from operational data
     inspector_budget = rng.choice([3, 4, 5, 5, 5], size=n_records)
+
+    # Prior complaint count: correlated with complaint category
+    # Brand-new → mostly 0-1 priors; recurrent → 1-2; high-freq → 2-3
+    prior_complaint_count = np.zeros(n_records, dtype=int)
+    for cat, pool in [(0, [0, 0, 1, 1, 2]),
+                      (1, [1, 1, 2, 2, 3]),
+                      (2, [2, 2, 3, 3, 3])]:
+        idx = np.where(complaint_category == cat)[0]
+        prior_complaint_count[idx] = rng.choice(pool, size=len(idx))
+
+    # Time of day bin derived from hour_of_day
+    # 0=night(22-5), 1=morning(6-11), 2=afternoon(12-17), 3=evening(18-21)
+    time_of_day_bin = np.where(
+        (hour_of_day >= 22) | (hour_of_day <= 5), 0,
+        np.where((hour_of_day >= 6)  & (hour_of_day <= 11), 1,
+        np.where((hour_of_day >= 12) & (hour_of_day <= 17), 2, 3))
+    ).astype(int)
 
     # Place exactly 16 violations, concentrated in recurrent (1) and high-freq (2)
     # 2 in brand-new, 6 in recurrent, 8 in high-frequency (matching ~2% rate)
@@ -80,11 +100,13 @@ def generate_synthetic_data(n_records: int = 755, seed: int = 42) -> pd.DataFram
     is_violation[chosen] = 1
 
     df = pd.DataFrame({
-        "complaint_category": complaint_category,
-        "borough":            borough,
-        "hour_of_day":        hour_of_day,
-        "inspector_budget":   inspector_budget,
-        "is_violation":       is_violation,
+        "complaint_category":   complaint_category,
+        "borough":              borough,
+        "hour_of_day":          hour_of_day,
+        "inspector_budget":     inspector_budget,
+        "prior_complaint_count":prior_complaint_count,
+        "time_of_day_bin":      time_of_day_bin,
+        "is_violation":         is_violation,
     })
     return df
 
@@ -108,10 +130,12 @@ class DOBDispatchEnv(gym.Env):
     """
     Custom Gymnasium environment for NYC DOB AHV complaint dispatch.
 
-    State  : MultiDiscrete([3, 5, 6])
-               s[0] = complaint_category  c ∈ {0,1,2}
-               s[1] = borough             b ∈ {0,1,2,3,4}
-               s[2] = inspector_budget    i ∈ {0,1,2,3,4,5}
+    State  : MultiDiscrete([3, 5, 6, 4, 4])
+               s[0] = complaint_category    c ∈ {0,1,2}
+               s[1] = borough               b ∈ {0,1,2,3,4}
+               s[2] = inspector_budget      i ∈ {0,1,2,3,4,5}
+               s[3] = prior_complaint_count p ∈ {0,1,2,3}
+               s[4] = time_of_day_bin       t ∈ {0,1,2,3}
 
     Action : Discrete(3)
                0 = Dismiss / Deprioritize  (cost 0)
@@ -143,13 +167,13 @@ class DOBDispatchEnv(gym.Env):
 
     def __init__(self):
         super().__init__()
-        self.observation_space = spaces.MultiDiscrete([3, 5, 6])
+        self.observation_space = spaces.MultiDiscrete([3, 5, 6, 4, 4])
         self.action_space      = spaces.Discrete(3)
 
         # Fixed complaint sequence (shared by all agents)
-        # inspector_budget is per-step availability from operational data
         self.complaints = DATA[["complaint_category", "borough",
-                                "inspector_budget", "is_violation"]].values
+                                "inspector_budget", "prior_complaint_count",
+                                "time_of_day_bin", "is_violation"]].values
 
         # Episode state
         self._reset_episode()
@@ -175,13 +199,13 @@ class DOBDispatchEnv(gym.Env):
 
     # ------------------------------------------------------------------
     def _get_obs(self):
-        c, b, i, _ = self.complaints[self._step_idx]
-        return np.array([int(c), int(b), int(i)], dtype=np.int64)
+        c, b, i, p, t, _ = self.complaints[self._step_idx]
+        return np.array([int(c), int(b), int(i), int(p), int(t)], dtype=np.int64)
 
     # ------------------------------------------------------------------
     def step(self, action: int):
-        c, b, i, v = self.complaints[self._step_idx]
-        c, b, i, v = int(c), int(b), int(i), int(v)
+        c, b, i, p, t, v = self.complaints[self._step_idx]
+        c, b, i, p, t, v = int(c), int(b), int(i), int(p), int(t), int(v)
 
         cost = self.ACTION_COST[action]
 
@@ -220,7 +244,7 @@ class DOBDispatchEnv(gym.Env):
         terminated = self._step_idx >= N_RECORDS
         truncated  = False
 
-        obs      = self._get_obs() if not terminated else np.zeros(3, dtype=np.int64)
+        obs      = self._get_obs() if not terminated else np.zeros(5, dtype=np.int64)
         info     = {}
         return obs, reward, terminated, truncated, info
 
@@ -333,8 +357,8 @@ class TDAgent:
         self.n_episodes    = n_episodes
         self.n_actions     = 3
 
-        # Q-table initialised to zero
-        self.Q = np.zeros((3, 5, 6, 3), dtype=np.float64)
+        # Q-table: (complaint_cat, borough, budget, prior_count, time_bin, action)
+        self.Q = np.zeros((3, 5, 6, 4, 4, 3), dtype=np.float64)
 
     # ------------------------------------------------------------------
     def _epsilon(self, episode: int) -> float:
@@ -345,20 +369,20 @@ class TDAgent:
     # ------------------------------------------------------------------
     def select_action(self, obs: np.ndarray, greedy: bool = False,
                       episode: int = 0) -> int:
-        c, b, i = int(obs[0]), int(obs[1]), int(obs[2])
+        c, b, i, p, t = int(obs[0]), int(obs[1]), int(obs[2]), int(obs[3]), int(obs[4])
         if not greedy and np.random.random() < self._epsilon(episode):
             return np.random.randint(self.n_actions)
-        return int(np.argmax(self.Q[c, b, i]))
+        return int(np.argmax(self.Q[c, b, i, p, t]))
 
     # ------------------------------------------------------------------
     def update(self, obs, action, reward, next_obs, done):
-        c,  b,  i  = int(obs[0]),      int(obs[1]),      int(obs[2])
-        c2, b2, i2 = int(next_obs[0]), int(next_obs[1]), int(next_obs[2])
+        c,  b,  i,  p,  t  = int(obs[0]),      int(obs[1]),      int(obs[2]),      int(obs[3]),      int(obs[4])
+        c2, b2, i2, p2, t2 = int(next_obs[0]), int(next_obs[1]), int(next_obs[2]), int(next_obs[3]), int(next_obs[4])
 
-        best_next = 0.0 if done else np.max(self.Q[c2, b2, i2])
+        best_next = 0.0 if done else np.max(self.Q[c2, b2, i2, p2, t2])
         td_target = reward + self.gamma * best_next
-        td_error  = td_target - self.Q[c, b, i, action]
-        self.Q[c, b, i, action] += self.alpha * td_error
+        td_error  = td_target - self.Q[c, b, i, p, t, action]
+        self.Q[c, b, i, p, t, action] += self.alpha * td_error
 
     # ------------------------------------------------------------------
     def train(self, env: DOBDispatchEnv, n_episodes: int = None) -> list:
@@ -591,7 +615,8 @@ if __name__ == "__main__":
         for c in range(3):
             print(f"  {CAT_NAMES[c]:<10}", end="")
             for b in range(5):
-                obs    = np.array([c, b, 5], dtype=np.int64)
+                # Fixed: budget=5, prior_count=2, time_bin=0 (night)
+                obs    = np.array([c, b, 5, 2, 0], dtype=np.int64)
                 action = agent_fn(obs)
                 print(f"{ACTION_NAMES[action]:>14}", end="")
             print()
@@ -600,7 +625,7 @@ if __name__ == "__main__":
     for c in range(3):
         print(f"  {CAT_NAMES[c]:<10}", end="")
         for b in range(5):
-            obs    = np.array([c, b, 5], dtype=np.int64)
+            obs    = np.array([c, b, 5, 2, 0], dtype=np.int64)
             action, _ = dqn_model.predict(obs, deterministic=True)
             print(f"{ACTION_NAMES[int(action)]:>14}", end="")
         print()
