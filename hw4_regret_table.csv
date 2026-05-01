@@ -1,5 +1,5 @@
 Algorithm,Mean,SE,CI_lo,CI_hi,Guarantee
 UCB1,17.132,0.193,16.754,17.51,O(K ln T) frequentist regret
 Bayes-UCB,2.994,0.812,1.403,4.585,Matches Lai-Robbins lower bound
-Thompson Sampling,5.7,0.63,4.466,6.934,O(√(KT log T)) Bayesian regret
+Thompson Sampling,5.7,0.63,4.466,6.934,O(sqrt(KT log T)) Bayesian regret
 Greedy (baseline),4.264,0.947,2.408,6.12,O(T) worst-case regret
